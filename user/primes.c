@@ -1,53 +1,88 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
-void sieve(int left_pipe) __attribute__((noreturn));
+int prime_filter(int pipe_input[]) __attribute__((noreturn));
 
-void sieve(int left_pipe) {
-    int prime;
-    if (read(left_pipe, &prime, sizeof(prime)) == 0) {
-        close(left_pipe);
+int prime_filter(int pipe_input[])
+{
+    int prime, number, pid;
+    int pipe_output[2];
+
+    close(pipe_input[1]);
+
+    if (read(pipe_input[0], &prime, 4) <= 0)
+    {
+        close(pipe_input[0]);
         exit(0);
     }
 
     printf("prime %d\n", prime);
 
-    int right_pipe[2];
-    pipe(right_pipe);
+    pipe(pipe_output);
 
-    if (fork() == 0) {
-        close(right_pipe[1]);
-        sieve(right_pipe[0]);
-    } else {
-        close(right_pipe[0]);
-        int num;
-        while (read(left_pipe, &num, sizeof(num)) != 0) {
-            if (num % prime != 0) {
-                write(right_pipe[1], &num, sizeof(num));
+    if ((pid = fork()) < 0)
+    {
+        close(pipe_output[1]);
+        close(pipe_output[0]);
+        close(pipe_input[0]);
+        fprintf(1, "primes: fork failed\n");
+        exit(-1);
+    }
+    else if (pid > 0)
+    {
+        close(pipe_output[0]);
+
+        while (read(pipe_input[0], &number, 4) > 0)
+        {
+            if (number % prime != 0)
+            {
+                write(pipe_output[1], &number, 4);
             }
         }
-        close(left_pipe);
-        close(right_pipe[1]);
+
+        close(pipe_output[1]);
+        close(pipe_input[0]);
+
         wait(0);
         exit(0);
+    }
+    else
+    {
+        close(pipe_input[0]);
+        prime_filter(pipe_output);
     }
 }
 
-int main() {
-    int start_pipe[2];
-    pipe(start_pipe);
+int main(int argc, char *argv[])
+{
+    int pipe_fd[2], pid;
+    pipe(pipe_fd);
 
-    if (fork() == 0) {
-        close(start_pipe[1]);
-        sieve(start_pipe[0]);
-    } else {
-        close(start_pipe[0]);
-        for (int i = 2; i <= 280; i++) {
-            write(start_pipe[1], &i, sizeof(i));
+    if ((pid = fork()) < 0)
+    {
+        close(pipe_fd[1]);
+        close(pipe_fd[0]);
+        exit(1);
+    }
+    else if (pid > 0)
+    {
+        close(pipe_fd[0]);
+
+        for (int i = 2; i <= 290; i++)
+        {
+            write(pipe_fd[1], &i, 4);
         }
-        close(start_pipe[1]);
+
+        close(pipe_fd[1]);
         wait(0);
         exit(0);
     }
+    else
+    {
+        close(pipe_fd[1]);
+        prime_filter(pipe_fd);
+    }
+
+    return 0;
 }
 
