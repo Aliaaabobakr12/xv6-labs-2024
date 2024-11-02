@@ -1,62 +1,53 @@
 #include "kernel/types.h"
-#include "kernel/stat.h"
 #include "user/user.h"
 
-#define MAX 38
-#define FIRST_PRIME 2
+void sieve(int left_pipe) __attribute__((noreturn));
 
-int create_natural_numbers();
-int filter_primes(int in_fd, int prime);
-
-int main(int argc, char *argv[]) {
+void sieve(int left_pipe) {
     int prime;
-    int in = create_natural_numbers();
-    int child_pid;
-
-    while (read(in, &prime, sizeof(int))) {
-        printf("Found prime: %d\n", prime);
-        in = filter_primes(in, prime);
-    }
-
-    while ((child_pid = wait((int*)0)) > 0) {
-    }
-
-    exit(0);
-}
-
-int create_natural_numbers() {
-    int out_pipe[2];
-    pipe(out_pipe);
-
-    if (fork() == 0) {
-        for (int i = FIRST_PRIME; i < MAX; i++) {
-            write(out_pipe[1], &i, sizeof(int));
-        }
-        close(out_pipe[1]);
+    if (read(left_pipe, &prime, sizeof(prime)) == 0) {
+        close(left_pipe);
         exit(0);
     }
 
-    close(out_pipe[1]);
-    return out_pipe[0];
-}
+    printf("prime %d\n", prime);
 
-int filter_primes(int in_fd, int prime) {
-    int num;
-    int out_pipe[2];
-    pipe(out_pipe);
+    int right_pipe[2];
+    pipe(right_pipe);
 
     if (fork() == 0) {
-        while (read(in_fd, &num, sizeof(int))) {
-            if (num % prime) {
-                write(out_pipe[1], &num, sizeof(int));
+        close(right_pipe[1]);
+        sieve(right_pipe[0]);
+    } else {
+        close(right_pipe[0]);
+        int num;
+        while (read(left_pipe, &num, sizeof(num)) != 0) {
+            if (num % prime != 0) {
+                write(right_pipe[1], &num, sizeof(num));
             }
         }
-        close(in_fd);
-        close(out_pipe[1]);
+        close(left_pipe);
+        close(right_pipe[1]);
+        wait(0);
         exit(0);
     }
-
-    close(in_fd);
-    close(out_pipe[1]);
-    return out_pipe[0];
 }
+
+int main() {
+    int start_pipe[2];
+    pipe(start_pipe);
+
+    if (fork() == 0) {
+        close(start_pipe[1]);
+        sieve(start_pipe[0]);
+    } else {
+        close(start_pipe[0]);
+        for (int i = 2; i <= 280; i++) {
+            write(start_pipe[1], &i, sizeof(i));
+        }
+        close(start_pipe[1]);
+        wait(0);
+        exit(0);
+    }
+}
+
