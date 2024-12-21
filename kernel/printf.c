@@ -18,8 +18,7 @@
 volatile int panicked = 0;
 
 // lock to avoid interleaving concurrent printf's.
-static struct
-{
+static struct {
   struct spinlock lock;
   int locking;
 } pr;
@@ -33,21 +32,20 @@ printint(long long xx, int base, int sign)
   int i;
   unsigned long long x;
 
-  if (sign && (sign = (xx < 0)))
+  if(sign && (sign = (xx < 0)))
     x = -xx;
   else
     x = xx;
 
   i = 0;
-  do
-  {
+  do {
     buf[i++] = digits[x % base];
-  } while ((x /= base) != 0);
+  } while((x /= base) != 0);
 
-  if (sign)
+  if(sign)
     buf[i++] = '-';
 
-  while (--i >= 0)
+  while(--i >= 0)
     consputc(buf[i]);
 }
 
@@ -62,94 +60,64 @@ printptr(uint64 x)
 }
 
 // Print to the console.
-int printf(char *fmt, ...)
+int
+printf(char *fmt, ...)
 {
   va_list ap;
   int i, cx, c0, c1, c2, locking;
   char *s;
 
   locking = pr.locking;
-  if (locking)
+  if(locking)
     acquire(&pr.lock);
 
   va_start(ap, fmt);
-  for (i = 0; (cx = fmt[i] & 0xff) != 0; i++)
-  {
-    if (cx != '%')
-    {
+  for(i = 0; (cx = fmt[i] & 0xff) != 0; i++){
+    if(cx != '%'){
       consputc(cx);
       continue;
     }
     i++;
-    c0 = fmt[i + 0] & 0xff;
+    c0 = fmt[i+0] & 0xff;
     c1 = c2 = 0;
-    if (c0)
-      c1 = fmt[i + 1] & 0xff;
-    if (c1)
-      c2 = fmt[i + 2] & 0xff;
-    if (c0 == 'd')
-    {
+    if(c0) c1 = fmt[i+1] & 0xff;
+    if(c1) c2 = fmt[i+2] & 0xff;
+    if(c0 == 'd'){
       printint(va_arg(ap, int), 10, 1);
-    }
-    else if (c0 == 'l' && c1 == 'd')
-    {
+    } else if(c0 == 'l' && c1 == 'd'){
       printint(va_arg(ap, uint64), 10, 1);
       i += 1;
-    }
-    else if (c0 == 'l' && c1 == 'l' && c2 == 'd')
-    {
+    } else if(c0 == 'l' && c1 == 'l' && c2 == 'd'){
       printint(va_arg(ap, uint64), 10, 1);
       i += 2;
-    }
-    else if (c0 == 'u')
-    {
+    } else if(c0 == 'u'){
       printint(va_arg(ap, int), 10, 0);
-    }
-    else if (c0 == 'l' && c1 == 'u')
-    {
+    } else if(c0 == 'l' && c1 == 'u'){
       printint(va_arg(ap, uint64), 10, 0);
       i += 1;
-    }
-    else if (c0 == 'l' && c1 == 'l' && c2 == 'u')
-    {
+    } else if(c0 == 'l' && c1 == 'l' && c2 == 'u'){
       printint(va_arg(ap, uint64), 10, 0);
       i += 2;
-    }
-    else if (c0 == 'x')
-    {
+    } else if(c0 == 'x'){
       printint(va_arg(ap, int), 16, 0);
-    }
-    else if (c0 == 'l' && c1 == 'x')
-    {
+    } else if(c0 == 'l' && c1 == 'x'){
       printint(va_arg(ap, uint64), 16, 0);
       i += 1;
-    }
-    else if (c0 == 'l' && c1 == 'l' && c2 == 'x')
-    {
+    } else if(c0 == 'l' && c1 == 'l' && c2 == 'x'){
       printint(va_arg(ap, uint64), 16, 0);
       i += 2;
-    }
-    else if (c0 == 'p')
-    {
+    } else if(c0 == 'p'){
       printptr(va_arg(ap, uint64));
-    }
-    else if (c0 == 's')
-    {
-      if ((s = va_arg(ap, char *)) == 0)
+    } else if(c0 == 's'){
+      if((s = va_arg(ap, char*)) == 0)
         s = "(null)";
-      for (; *s; s++)
+      for(; *s; s++)
         consputc(*s);
-    }
-    else if (c0 == '%')
-    {
+    } else if(c0 == '%'){
       consputc('%');
-    }
-    else if (c0 == 0)
-    {
+    } else if(c0 == 0){
       break;
-    }
-    else
-    {
+    } else {
       // Print unknown % sequence to draw attention.
       consputc('%');
       consputc(c0);
@@ -185,47 +153,52 @@ int printf(char *fmt, ...)
   }
   va_end(ap);
 
-  if (locking)
+  if(locking)
     release(&pr.lock);
 
   return 0;
 }
 
-void panic(char *s)
+void
+panic(char *s)
 {
   pr.locking = 0;
   printf("panic: ");
   printf("%s\n", s);
   panicked = 1; // freeze uart output from other CPUs
-  for (;;)
+  backtrace();
+  for(;;)
     ;
 }
 
-void printfinit(void)
+void
+printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
 
-void backtrace()
-{
-  uint64 fp;   /* frame pointer */
-  uint64 top;  /* top of stack */
-  uint64 down; /* bottom of stack */
+// void
+// backtrace(void){
+//   printf("backtrace:\n");
+//   uint64 fp=r_fp();
+//   uint64 fp_page_start=PGROUNDDOWN(fp);
+//   while(fp_page_start==PGROUNDDOWN(fp)){
+//     uint64 ret_addr= *(uint64*)(fp-8);
+//     printf("0x%p\n", (void *)ret_addr);
+//     fp = *(uint64*)(fp-16);
+//   }  
+// }
 
-  /* get current frame pointer */
-  fp = r_fp();
-
-  /* get address range of stack */
-  top = PGROUNDUP(fp);
-  down = PGROUNDDOWN(fp);
-
+void backtrace(){
+  uint64 fp = r_fp();
+  uint64 up = PGROUNDUP(fp);
+  uint64 down = PGROUNDDOWN(fp);
   printf("backtrace:\n");
-
-  while (fp <= top && fp >= down)
-  {
-    uint64 ra = *(uint64 *)(fp - 8);
-    fp = *(uint64 *)(fp - 16);
-    printf("%p\n", (void *)ra);
+  while(fp < up && fp > down){
+    uint64 ra = fp - 8;
+    uint64 pre = fp - 16;
+    printf("%p\n", (void *)*(uint64 *)ra);
+    fp = *(uint64 *)pre;
   }
 }

@@ -1,0 +1,39 @@
+Question 1: Which registers contain arguments to functions? For example, which
+register holds 13 in main’s call to printf ?
+Answer: Function arguments are passed using the argument registers a0 through a7. These regis-
+ters hold up to 8 arguments to a function. For additional arguments beyond the first 8, the stack is
+used. The register a2 holds the value 13.
+
+Question 2: Where is the call to function f in the assembly code for main? Where
+is the call to g? (Hint: the compiler may inline functions.)
+Answer: The functions f and g have been inlined by the compiler into the assembly for main. Since
+both f and g are simple functions, the compiler has optimized them by inlining their logic directly
+into main, avoiding the overhead of function calls.
+
+Question 3: At what address is the function printf located?
+Answer: The function printf is located at the address 0x6bc.
+
+Question 4: What value is in the register ra just after the jalr to printf in main?
+Answer: The value in the ra register is the address of the instruction immediately following the
+jalr instruction. The value in the ra register after the jal to printf will be 0x34.
+
+Question 5: 
+Answer:
+• Output = He110 World.
+• %x outputs a hexadecimal format of 57616 (0xE110).
+• %s outputs a string starting from the address of &i. Since the system is little-endian, the bytes
+are read from the low address to the high address:
+– ”0x72”, ”0x6c”, ”0x64”, ending with 0, which results in the string ”rld”.
+• For big-endian alignment, it needs to be changed to 0x726c6400, and the value 57616 would
+remain unchanged because the interpretation of integer values does not depend on endianness.
+
+Question 6:
+Answer:
+• printf does not perform runtime checks to verify that the number of arguments matches the
+number of format specifiers. The printf function expects two integers (%d for x and %d for y)
+based on the format string, but only one argument (3) is provided.
+• printf will attempt to read a value from the stack where it expects the second argument to
+be. However, no second argument was passed, so it will print whatever happens to be in that
+location on the stack. It will be a garbage value.
+
+
