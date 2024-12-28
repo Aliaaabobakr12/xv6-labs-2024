@@ -303,6 +303,8 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+extern int refcnt[];
+extern struct spinlock cnt_lock;
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -314,29 +316,45 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
-  char *mem;
-
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
+  uint64 flags;
+     
+  for (i = 0; i < sz; i += PGSIZE) {
+    if ((pte = walk(old, i, 0)) == 0)
+      panic("uvmcopy: pte shuld exist");
+       
+    if ((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+       
+    // get the according physical address
     pa = PTE2PA(*pte);
+    // get the parent pte flags
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+       
+    // set the flags to COW pte
+    if (flags & PTE_W) {
+      flags = (flags | PTE_COW) & (~PTE_W);
+      *pte = PA2PTE(pa) | flags;
+    }
+       
+    // increment the reference count of page
+    if ((uint64) pa % PGSIZE != 0 || (uint64) pa >= PHYSTOP)
+      panic("uvmcopy: pa invalid");
+       
+    acquire(&cnt_lock);
+    refcnt[(uint64) pa >> 12] += 1;
+    release(&cnt_lock);
+       
+    // map the same pa to child process with COW flags
+    if (mappages(new, i, PGSIZE, (uint64) pa, flags) != 0) {
       goto err;
     }
   }
+     
   return 0;
-
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
+     
+  err:
+  	uvmunmap(new, 0, i / PGSIZE, 1);
+  	return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -359,22 +377,32 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-  pte_t *pte;
-
+   
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if(va0 >= MAXVA)
+    if (va0 > MAXVA)
       return -1;
-    pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+   
+    /* get the pte of va */
+    pte_t* pte = walk(pagetable, va0, 0);
+    if (pte == 0)
       return -1;
+   
+    /* 🌟 if the va is a COW page, process cow handling */
+    if ((*pte) & PTE_COW) {
+      if (cow_handling(pagetable, va0) < 0) {
+         return -1; 
+      }
+    }
+   
+    /* update the pa after the cow handling */
     pa0 = PTE2PA(*pte);
+   
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
-
+   
     len -= n;
     src += n;
     dstva = va0 + PGSIZE;
@@ -448,4 +476,41 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+cow_handling(pagetable_t pgtable, uint64 va)
+{
+  // va validation check
+  if (va >= MAXVA)
+    return -1;
+     
+  // get the corresponding pte
+  pte_t* pte = walk(pgtable, va, 0);
+  if (pte == 0)
+    return -1;
+     
+  // validation checks for pte
+  if ((*pte & PTE_V) == 0 || (*pte & PTE_COW) == 0 || (*pte & PTE_U) == 0)
+    return -1;
+     
+  // get pa of pte and do the validation check
+  uint64 pa = PTE2PA(*pte);
+  if (pa == 0)
+    return -1;
+     
+  // allocate a new page and copy the content of pa to it
+  uint64 ka = (uint64) kalloc();
+  if (ka == 0)
+    return -1;
+  memmove((char *) ka, (char*) pa, PGSIZE);
+     
+  // set the flags for the new page
+  uint64 flags = PTE_FLAGS(*pte);
+  flags = flags | (PTE_W & (~PTE_COW));
+  *pte = PA2PTE((uint64) ka) | flags;
+     
+  // decrement the ref_cnt to the old pa
+  kfree((void *) pa);
+  return 0;
 }
