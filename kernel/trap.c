@@ -64,31 +64,34 @@ usertrap(void)
     // so don't enable until done with those registers.
     intr_on();
    
-    syscall();
+     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-   
-  /* 🌟 handling the COW page fault */   
-  } else if (r_scause() == 15 || r_scause() == 13) {
-    uint64 va = r_stval();
-    // pass the virtual address va to cow-handling
-    if (va >= p->sz || cow_handling(p->pagetable, va) < 0) {
-      p->killed = 1;
+  } else if(r_scause() == 15) {  // scause 为 15 代表尝试写入引发的缺页错误。
+    // Synchronous page fault from kernel.
+    // This is most likely caused by a kernel
+    // access to a user space address, for example
+    // if the kernel tries to read a user page
+    // or if a user page is paged out and the kernel
+    // needs to bring it back in.
+    uint64 addr = r_stval();
+    if(cowalloc(p->pagetable, addr) < 0){
+      printf("alloc user page fault addr=%lx\n", addr);
+      setkilled(p);
     }
   } else {
-    // Cast r_scause(), r_sepc(), and r_stval() to void* before passing them to printf
-    printf("usertrap(): unexpected scause %p pid=%d\n", (void *)r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", (void *)r_sepc(), (void *)r_stval());
-    p->killed = 1;
+    printf("usertrap(): unexpected scause %lx pid=%d\n", r_scause(), p->pid);
+    printf("            sepc=%lx stval=%lx\n", r_sepc(), r_stval());
+    setkilled(p);
   }
-   
-  if(p->killed)
+
+  if(killed(p))
     exit(-1);
-   
+
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
     yield();
-   
+
   usertrapret();
 }
 

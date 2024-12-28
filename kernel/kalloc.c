@@ -23,65 +23,95 @@ struct {
   struct run *freelist;
 } kmem;
 
-struct spinlock cnt_lock;
-int refcnt[PHYSTOP >> 12];
+struct {
+  struct spinlock lock;
+  int ref[PHYSTOP/PGSIZE];
+} pageref;
+
+#define PG_REFCNT(pa) (pageref.ref[((uint64)(pa)) / PGSIZE])
+
+void
+refcnt_inc(void *pa){
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("refcnt_inc");
+  acquire(&pageref.lock);
+  PG_REFCNT(pa)++;
+  release(&pageref.lock);
+}
+
+void
+refcnt_init(void *pa){
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("refcnt_init");
+  acquire(&pageref.lock);
+  PG_REFCNT(pa) = 1;
+  release(&pageref.lock);
+}
+
+void
+refcnt_dec(void *pa){
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("refcnt_dec");
+  acquire(&pageref.lock);
+  PG_REFCNT(pa)--;
+  release(&pageref.lock);
+}
+
+int
+get_refcnt(void *pa){
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("get_refcnt");
+  acquire(&pageref.lock);
+  int ret = PG_REFCNT(pa);
+  release(&pageref.lock);
+  return ret;
+}
 
 void
 kinit()
 {
-  initlock(&cnt_lock, "cow");
   initlock(&kmem.lock, "kmem");
+  initlock(&pageref.lock, "ref_cnt");
+  memset(pageref.ref, 0, sizeof(pageref.ref));
   freerange(end, (void*)PHYSTOP);
 }
 
-void freerange(void *pa_start, void *pa_end)
+void
+freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for (; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
-    refcnt[(uint64)p >> 12] = 1;
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
-  }
 }
 
 // Free the page of physical memory pointed at by pa,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
-#include <stdint.h> // for uintptr_t
-
-void kfree(void *pa)
+void
+kfree(void *pa)
 {
   struct run *r;
 
-  // pa validation checks
-  if ((uintptr_t)pa % PGSIZE != 0 || (uintptr_t)pa < (uintptr_t)end || (uintptr_t)pa > (uintptr_t)PHYSTOP)
-    panic("kfree: invalid pa");
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
 
-  int pgidx = (uintptr_t)pa >> 12; // pa divide by PGSIZE (4k)
-
-  // kfree will release the page if ref_cnt is 1, otherwise decrement ref_cnt
-  acquire(&cnt_lock);
-
-  // case 1: last reference, release the page
-  if (--refcnt[pgidx] == 0) {
-    release(&cnt_lock);
-
-    memset(pa, 1 , PGSIZE);
-    r = (struct run *) pa;
-
-    acquire(&kmem.lock);
-    r->next = kmem.freelist;
-    kmem.freelist = r;
-    release(&kmem.lock);
-
-  // case 2: decrease the reference count only
-  } else {
-    release(&cnt_lock);
+  if(get_refcnt(pa) > 1){
+    refcnt_dec(pa);
+    return;
   }
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run*)pa;
+
+  acquire(&kmem.lock);
+  r->next = kmem.freelist;
+  kmem.freelist = r;
+  release(&kmem.lock);
 }
-
-
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
@@ -90,24 +120,16 @@ void *
 kalloc(void)
 {
   struct run *r;
-   
+
   acquire(&kmem.lock);
   r = kmem.freelist;
-   
-  /* first make sure the page is available */
   if(r) {
     kmem.freelist = r->next;
-   
-    /* second, increase the ref_cnt of new page to 1 */
-    acquire(&cnt_lock);
-    refcnt[(uint64)r >> 12] = 1;
-    release(&cnt_lock);
+    refcnt_init((void*)r);
   }
-   
   release(&kmem.lock);
-   
+
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
-   
   return (void*)r;
 }

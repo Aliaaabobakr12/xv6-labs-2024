@@ -303,58 +303,47 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
-extern int refcnt[];
-extern struct spinlock cnt_lock;
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+extern int refcnt[];
+extern struct spinlock cnt_lock;
+   
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint64 flags;
-     
-  for (i = 0; i < sz; i += PGSIZE) {
-    if ((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte shuld exist");
-       
-    if ((*pte & PTE_V) == 0)
+  int flags;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      panic("uvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-       
-    // get the according physical address
-    pa = PTE2PA(*pte);
-    // get the parent pte flags
-    flags = PTE_FLAGS(*pte);
-       
-    // set the flags to COW pte
-    if (flags & PTE_W) {
-      flags = (flags | PTE_COW) & (~PTE_W);
-      *pte = PA2PTE(pa) | flags;
+    if((pa = PTE2PA(*pte)) == 0)
+      panic("uvmcopy: address should exist");
+
+    if(*pte & PTE_W){ // 如果可以写变成COW页
+      *pte |= PTE_C;
+      *pte &= ~PTE_W;
     }
-       
-    // increment the reference count of page
-    if ((uint64) pa % PGSIZE != 0 || (uint64) pa >= PHYSTOP)
-      panic("uvmcopy: pa invalid");
-       
-    acquire(&cnt_lock);
-    refcnt[(uint64) pa >> 12] += 1;
-    release(&cnt_lock);
-       
-    // map the same pa to child process with COW flags
-    if (mappages(new, i, PGSIZE, (uint64) pa, flags) != 0) {
+
+    flags = PTE_FLAGS(*pte);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      printf("uvmcopy: mappages\n");
       goto err;
     }
+    refcnt_inc((void *) pa);  // 增加引用计数。
   }
-     
   return 0;
-     
-  err:
-  	uvmunmap(new, 0, i / PGSIZE, 1);
-  	return -1;
+
+ err:
+  uvmunmap(new, 0, i / PGSIZE, 1);
+  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -377,32 +366,19 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-   
+
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if (va0 > MAXVA)
+    if(cowalloc(pagetable, va0) < 0)
       return -1;
-   
-    /* get the pte of va */
-    pte_t* pte = walk(pagetable, va0, 0);
-    if (pte == 0)
+    pa0 = walkaddr(pagetable, va0);
+    if(pa0 == 0)
       return -1;
-   
-    /* 🌟 if the va is a COW page, process cow handling */
-    if ((*pte) & PTE_COW) {
-      if (cow_handling(pagetable, va0) < 0) {
-         return -1; 
-      }
-    }
-   
-    /* update the pa after the cow handling */
-    pa0 = PTE2PA(*pte);
-   
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
-   
+
     len -= n;
     src += n;
     dstva = va0 + PGSIZE;
@@ -477,40 +453,47 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
-
 int
-cow_handling(pagetable_t pgtable, uint64 va)
+cowalloc(pagetable_t pagetable, uint64 va)
 {
-  // va validation check
-  if (va >= MAXVA)
+  if(va >= MAXVA)
     return -1;
-     
-  // get the corresponding pte
-  pte_t* pte = walk(pgtable, va, 0);
-  if (pte == 0)
+
+  uint64 pa, new_pa, va_rounded;
+  int flags;
+
+  pte_t *pte = walk(pagetable, va, 0);
+
+  if( pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
     return -1;
-     
-  // validation checks for pte
-  if ((*pte & PTE_V) == 0 || (*pte & PTE_COW) == 0 || (*pte & PTE_U) == 0)
+
+  flags = PTE_FLAGS(*pte);
+  pa = PTE2PA(*pte);
+  va_rounded = PGROUNDDOWN(va);
+  // 不是 cow 页，且没有写权限，非法写入。
+  if(!(*pte & PTE_C) && !(*pte & PTE_W))
     return -1;
-     
-  // get pa of pte and do the validation check
-  uint64 pa = PTE2PA(*pte);
-  if (pa == 0)
-    return -1;
-     
-  // allocate a new page and copy the content of pa to it
-  uint64 ka = (uint64) kalloc();
-  if (ka == 0)
-    return -1;
-  memmove((char *) ka, (char*) pa, PGSIZE);
-     
-  // set the flags for the new page
-  uint64 flags = PTE_FLAGS(*pte);
-  flags = flags | (PTE_W & (~PTE_COW));
-  *pte = PA2PTE((uint64) ka) | flags;
-     
-  // decrement the ref_cnt to the old pa
-  kfree((void *) pa);
-  return 0;
+  // 有写权限 or COW 位是0，该页不是COWpage
+  if( (*pte & PTE_W) || !(*pte & PTE_C))
+    return 0;
+  // 大于1个进程引用该页，需要复制。
+  if(get_refcnt((void *) pa) > 1){
+    if((new_pa = (uint64) kalloc()) == 0) // 申请一个物理页。
+      panic("cowalloc: kalloc");
+    memmove((void *)new_pa, (const void *) pa, PGSIZE);  // 将原物理页中的内容复制到新物理页中。
+    uvmunmap(pagetable, va_rounded, 1, 1);  // 解除虚拟页和物理页的映射关系。
+    flags &= ~PTE_C;  // 清除页表项中的 COW 位。
+    flags |= PTE_W;  // 设置页表项中的 W 位。
+    if(mappages(pagetable, va_rounded, PGSIZE, new_pa, flags) != 0){// 建立新的虚拟页和物理页的映射关系。
+      kfree((void *)new_pa);
+      return -1;
+    }
+    return 0;
+  } else if(get_refcnt((void *) pa) == 1){
+    *pte |= PTE_W;
+    *pte &= ~PTE_C;
+    return 0;
+  }
+
+  return -1;
 }
