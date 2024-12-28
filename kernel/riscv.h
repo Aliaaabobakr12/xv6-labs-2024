@@ -1,12 +1,5 @@
 #ifndef __ASSEMBLER__
 
-static inline uint64 
-r_fp(){
-  uint64 x;
-  asm volatile("mv %0, s0" : "=r" (x) );
-  return x;
-}
-
 // which hart (core) is this?
 static inline uint64
 r_mhartid()
@@ -23,6 +16,8 @@ r_mhartid()
 #define MSTATUS_MPP_S (1L << 11)
 #define MSTATUS_MPP_U (0L << 11)
 #define MSTATUS_MIE (1L << 3)    // machine-mode interrupt enable.
+#define PTE_COW            (1L << 8)
+#define GET_PTE_COW(pte)   (pte >> 8) & 1
 
 static inline uint64
 r_mstatus()
@@ -353,9 +348,6 @@ sfence_vma()
   asm volatile("sfence.vma zero, zero");
 }
 
-
-
-
 typedef uint64 pte_t;
 typedef uint64 *pagetable_t; // 512 PTEs
 
@@ -390,4 +382,3 @@ typedef uint64 *pagetable_t; // 512 PTEs
 // Sv39, to avoid having to sign-extend virtual addresses
 // that have the high bit set.
 #define MAXVA (1L << (9 + 9 + 9 + 12 - 1))
-

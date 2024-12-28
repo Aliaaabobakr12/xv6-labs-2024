@@ -37,98 +37,58 @@ void
 usertrap(void)
 {
   int which_dev = 0;
-
+   
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
-
+   
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
   w_stvec((uint64)kernelvec);
-
+   
   struct proc *p = myproc();
-  
+     
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+     
   if(r_scause() == 8){
     // system call
-
-    if(killed(p))
+   
+    if(p->killed)
       exit(-1);
-
+   
     // sepc points to the ecall instruction,
     // but we want to return to the next instruction.
     p->trapframe->epc += 4;
-
-    // an interrupt will change sepc, scause, and sstatus,
-    // so enable only now that we're done with those registers.
+   
+    // an interrupt will change sstatus &c registers,
+    // so don't enable until done with those registers.
     intr_on();
-
+   
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
-    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
-    setkilled(p);
-  }
-
-  if(killed(p))
-    exit(-1);
-
-   // 🌟 if it's a timer interrupt and currently no handler is on
-  if (which_dev == 2 && p->handler_on == 0) {
-		// tick count plus one
-    p->ticks_pass += 1;
-
-    // check if alarm should be enabled
-    if (p->ticks_pass % p->interval == 0) {
-      // reset ticks pass and set handler status to prevent re-enter
-      p->ticks_pass = 0;
-      p->handler_on = 1;   
-
-      // save the trapframe registers for future return
-      p->epc = p->trapframe->epc;
-      p->ra  = p->trapframe->ra;
-      p->sp  = p->trapframe->sp;
-      p->gp  = p->trapframe->gp;     
-      p->tp  = p->trapframe->tp;
-      p->t0  = p->trapframe->t0;
-      p->t1  = p->trapframe->t1;
-      p->t2  = p->trapframe->t2;
-      p->s0  = p->trapframe->s0;
-      p->s1  = p->trapframe->s1;     
-      p->a0  = p->trapframe->a0;
-      p->a1  = p->trapframe->a1;
-      p->a2  = p->trapframe->a2;
-      p->a3  = p->trapframe->a3;
-      p->a4  = p->trapframe->a4;
-      p->a5  = p->trapframe->a5;
-      p->a6  = p->trapframe->a6;
-      p->a7  = p->trapframe->a7;
-      p->s2  = p->trapframe->s2;
-      p->s3  = p->trapframe->s3;
-      p->s4  = p->trapframe->s4;
-      p->s5  = p->trapframe->s5;
-      p->s6  = p->trapframe->s6;
-      p->s7  = p->trapframe->s7;
-      p->s8  = p->trapframe->s8;
-      p->s9  = p->trapframe->s9;
-      p->s10  = p->trapframe->s10;
-      p->s11  = p->trapframe->s11;
-      p->t3  = p->trapframe->t3;
-      p->t4  = p->trapframe->t4;
-      p->t5  = p->trapframe->t5;
-      p->t6  = p->trapframe->t6;
-     
-      // redirect to handler
-      p->trapframe->epc = p->handler;
+   
+  /* 🌟 handling the COW page fault */   
+  } else if (r_scause() == 15 || r_scause() == 13) {
+    uint64 va = r_stval();
+    // pass the virtual address va to cow-handling
+    if (va >= p->sz || cow_handling(p->pagetable, va) < 0) {
+      p->killed = 1;
     }
-    
-		// give up CPU since it's a timer interrupt
-    yield();
+  } else {
+    // Cast r_scause(), r_sepc(), and r_stval() to void* before passing them to printf
+    printf("usertrap(): unexpected scause %p pid=%d\n", (void *)r_scause(), p->pid);
+    printf("            sepc=%p stval=%p\n", (void *)r_sepc(), (void *)r_stval());
+    p->killed = 1;
   }
-
+   
+  if(p->killed)
+    exit(-1);
+   
+  // give up the CPU if this is a timer interrupt.
+  if(which_dev == 2)
+    yield();
+   
   usertrapret();
 }
 
