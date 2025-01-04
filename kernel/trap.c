@@ -37,51 +37,39 @@ void
 usertrap(void)
 {
   int which_dev = 0;
-   
+
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
-   
+
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
   w_stvec((uint64)kernelvec);
-   
+
   struct proc *p = myproc();
-     
+  
   // save user program counter.
   p->trapframe->epc = r_sepc();
-     
+  
   if(r_scause() == 8){
     // system call
-   
-    if(p->killed)
+
+    if(killed(p))
       exit(-1);
-   
+
     // sepc points to the ecall instruction,
     // but we want to return to the next instruction.
     p->trapframe->epc += 4;
-   
-    // an interrupt will change sstatus &c registers,
-    // so don't enable until done with those registers.
+
+    // an interrupt will change sepc, scause, and sstatus,
+    // so enable only now that we're done with those registers.
     intr_on();
-   
-     syscall();
+
+    syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if(r_scause() == 15) {  // scause 为 15 代表尝试写入引发的缺页错误。
-    // Synchronous page fault from kernel.
-    // This is most likely caused by a kernel
-    // access to a user space address, for example
-    // if the kernel tries to read a user page
-    // or if a user page is paged out and the kernel
-    // needs to bring it back in.
-    uint64 addr = r_stval();
-    if(cowalloc(p->pagetable, addr) < 0){
-      printf("alloc user page fault addr=%lx\n", addr);
-      setkilled(p);
-    }
   } else {
-    printf("usertrap(): unexpected scause %lx pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%lx stval=%lx\n", r_sepc(), r_stval());
+    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+    printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     setkilled(p);
   }
 

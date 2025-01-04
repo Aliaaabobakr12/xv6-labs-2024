@@ -309,35 +309,28 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
-extern int refcnt[];
-extern struct spinlock cnt_lock;
-   
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  int flags;
+  uint flags;
+  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-    if((pa = PTE2PA(*pte)) == 0)
-      panic("uvmcopy: address should exist");
-
-    if(*pte & PTE_W){ // 如果可以写变成COW页
-      *pte |= PTE_C;
-      *pte &= ~PTE_W;
-    }
-
+    pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
-      printf("uvmcopy: mappages\n");
+    if((mem = kalloc()) == 0)
+      goto err;
+    memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
       goto err;
     }
-    refcnt_inc((void *) pa);  // 增加引用计数。
   }
   return 0;
 
@@ -366,14 +359,17 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if(cowalloc(pagetable, va0) < 0)
+    if(va0 >= MAXVA)
       return -1;
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
+       (*pte & PTE_W) == 0)
       return -1;
+    pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -452,48 +448,4 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
-}
-int
-cowalloc(pagetable_t pagetable, uint64 va)
-{
-  if(va >= MAXVA)
-    return -1;
-
-  uint64 pa, new_pa, va_rounded;
-  int flags;
-
-  pte_t *pte = walk(pagetable, va, 0);
-
-  if( pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
-    return -1;
-
-  flags = PTE_FLAGS(*pte);
-  pa = PTE2PA(*pte);
-  va_rounded = PGROUNDDOWN(va);
-  // 不是 cow 页，且没有写权限，非法写入。
-  if(!(*pte & PTE_C) && !(*pte & PTE_W))
-    return -1;
-  // 有写权限 or COW 位是0，该页不是COWpage
-  if( (*pte & PTE_W) || !(*pte & PTE_C))
-    return 0;
-  // 大于1个进程引用该页，需要复制。
-  if(get_refcnt((void *) pa) > 1){
-    if((new_pa = (uint64) kalloc()) == 0) // 申请一个物理页。
-      panic("cowalloc: kalloc");
-    memmove((void *)new_pa, (const void *) pa, PGSIZE);  // 将原物理页中的内容复制到新物理页中。
-    uvmunmap(pagetable, va_rounded, 1, 1);  // 解除虚拟页和物理页的映射关系。
-    flags &= ~PTE_C;  // 清除页表项中的 COW 位。
-    flags |= PTE_W;  // 设置页表项中的 W 位。
-    if(mappages(pagetable, va_rounded, PGSIZE, new_pa, flags) != 0){// 建立新的虚拟页和物理页的映射关系。
-      kfree((void *)new_pa);
-      return -1;
-    }
-    return 0;
-  } else if(get_refcnt((void *) pa) == 1){
-    *pte |= PTE_W;
-    *pte &= ~PTE_C;
-    return 0;
-  }
-
-  return -1;
 }
